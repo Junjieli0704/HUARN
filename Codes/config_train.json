@@ -1,5 +1,5 @@
 {
-  "dataset": "tripDatSet",
+  "dataset": "TripOUR",
   "code_mode": "train",
   "model_type": "MODELB",
   "model_mode": "+U+R",
