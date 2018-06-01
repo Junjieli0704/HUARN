@@ -2,8 +2,8 @@
 
 def get_model_type_dict():
     model_type_dict = {}
-    model_type_dict['MODELA'] = {'batch_size': 32}
-    model_type_dict['MODELB'] = {'batch_size': 10}
+    model_type_dict['MHAN'] = {'batch_size': 32}
+    model_type_dict['MHAN_AspSpec'] = {'batch_size': 10}
     return model_type_dict
 
 def get_data_dict():

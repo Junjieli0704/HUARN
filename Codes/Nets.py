@@ -86,7 +86,7 @@ class HAN(nn.Module):
         out = self.lin_out(doc_embs)
         return out
 
-class MODELA(nn.Module):
+class MHAN(nn.Module):
     def __init__(self,
                  ntoken,
                  n_users,
@@ -100,7 +100,7 @@ class MODELA(nn.Module):
                  drop_out_rate=0.0,
                  model_init_needed=False
                  ):
-        super(MODELA, self).__init__()
+        super(MHAN, self).__init__()
 
         self.mode = mode
         self.emb_size = emb_size
@@ -116,6 +116,236 @@ class MODELA(nn.Module):
         I.normal(self.users.weight.data, 0.01, 0.01)
         self.rating_embed = nn.Embedding(n_rating, emb_size)
         I.normal(self.rating_embed.weight.data, 0.01, 0.01)
+
+        if self.rnn_type == 'LSTM':
+            RNN_cell = nn.LSTM
+        elif self.rnn_type == 'GRU':
+            RNN_cell = nn.GRU
+        else:
+            RNN_cell = nn.GRU
+
+
+        self.word_rnn = BiRNN(inp_size = emb_size,
+                              hid_size = self.hid_size,
+                              dropout = self.drop_out_rate,
+                              RNN_cell = RNN_cell)
+
+        self.sent_rnn = BiRNN(inp_size = self.hid_size * 2,
+                              hid_size = self.hid_size,
+                              dropout = self.drop_out_rate,
+                              RNN_cell = RNN_cell)
+
+        self.word_attent = Attention(self.hid_size * 2 , self.hid_size * 2)
+        self.sent_attent = Attention(self.hid_size * 2 , self.hid_size * 2)
+
+        self.lin_out1 = nn.Linear(self.hid_size * 2, num_class).cuda()
+        self.lin_out2 = nn.Linear(self.hid_size * 2, num_class).cuda()
+        self.lin_out3 = nn.Linear(self.hid_size * 2, num_class).cuda()
+        self.lin_out4 = nn.Linear(self.hid_size * 2, num_class).cuda()
+        self.lin_out5 = nn.Linear(self.hid_size * 2, num_class).cuda()
+        self.lin_out6 = nn.Linear(self.hid_size * 2, num_class).cuda()
+        self.lin_out7 = nn.Linear(self.hid_size * 2, num_class).cuda()
+
+        self._init_para()
+
+
+    def _init_para(self):
+        if self.model_init_needed:
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_normal(m.weight.data)
+                    if m.bias is not None:
+                        m.bias.data.normal_(0, 0.01)
+
+    def set_emb_tensor(self, emb_tensor):
+        self.emb_size = emb_tensor.size(-1)
+        self.embed.weight.data = emb_tensor
+
+    def _reorder_sent(self, sents, sent_order):
+        sents = F.pad(sents, (0, 0, 1, 0))  # adds a 0 to the top
+        revs = sents[sent_order.view(-1)]
+        revs = revs.view(sent_order.size(0), sent_order.size(1), sents.size(1))
+        return revs
+
+    def forward(self, batch_reviews, sent_order, ls, lr, batch_overRating,batch_doc_usrs,batch_sen_usrs):
+
+        if self.drop_out_rate > 0.0:
+            emb_w = F.dropout(self.embed(batch_reviews), training=self.training, p=self.drop_out_rate)
+        else:
+            emb_w = self.embed(batch_reviews)
+
+        packed_sents = torch.nn.utils.rnn.pack_padded_sequence(emb_w, ls, batch_first=True)
+        wrd_rnn_res, len_s = self.word_rnn(packed_sents)
+
+        wrd_rnn_asp_join_tmp_tensor = wrd_rnn_res
+
+        sent_emb, wrd_att_res = self.word_attent(wrd_rnn_res, wrd_rnn_asp_join_tmp_tensor, len_s)
+        rev_emb = self._reorder_sent(sent_emb, sent_order)
+        packed_rev = torch.nn.utils.rnn.pack_padded_sequence(rev_emb, lr, batch_first=True)
+        sen_rnn_res, len_r = self.sent_rnn(packed_rev)
+
+        sent_rnn_asp_join_tmp_tensor = sen_rnn_res
+
+        doc_embs, sent_att_res = self.sent_attent(sen_rnn_res, sent_rnn_asp_join_tmp_tensor, len_r)
+        doc_embs_new = doc_embs
+
+        out = []
+        if self.aspect_label_num == 7:
+            out.append(self.lin_out1(doc_embs_new))
+            out.append(self.lin_out2(doc_embs_new))
+            out.append(self.lin_out3(doc_embs_new))
+            out.append(self.lin_out4(doc_embs_new))
+            out.append(self.lin_out5(doc_embs_new))
+            out.append(self.lin_out6(doc_embs_new))
+            out.append(self.lin_out7(doc_embs_new))
+        if self.aspect_label_num == 4:
+            out.append(self.lin_out1(doc_embs_new))
+            out.append(self.lin_out2(doc_embs_new))
+            out.append(self.lin_out3(doc_embs_new))
+            out.append(self.lin_out4(doc_embs_new))
+        return out, [wrd_att_res], [sent_att_res]
+
+# class MBGRU(nn.Module):
+#     def __init__(self,
+#                  ntoken,
+#                  num_class,
+#                  aspect_label_num,
+#                  emb_size=200,
+#                  hid_size=100,
+#                  mode = '',
+#                  rnn_type = 'GRU',
+#                  drop_out_rate=0.0,
+#                  model_init_needed=False
+#                  ):
+#         super(MBGRU, self).__init__()
+#
+#         self.mode = mode
+#         self.emb_size = emb_size
+#         self.hid_size = hid_size
+#         self.rnn_type = rnn_type
+#         self.drop_out_rate = drop_out_rate
+#         self.model_init_needed = model_init_needed
+#         self.aspect_label_num = aspect_label_num
+#
+#         self.embed = nn.Embedding(ntoken, emb_size, padding_idx=0)
+#
+#
+#         if self.rnn_type == 'LSTM':
+#             RNN_cell = nn.LSTM
+#         elif self.rnn_type == 'GRU':
+#             RNN_cell = nn.GRU
+#         else:
+#             RNN_cell = nn.GRU
+#
+#
+#         self.word_rnn = BiRNN(inp_size = emb_size,
+#                               hid_size = self.hid_size,
+#                               dropout = self.drop_out_rate,
+#                               RNN_cell = RNN_cell)
+#
+#         self.sent_rnn = BiRNN(inp_size = self.hid_size * 2,
+#                               hid_size = self.hid_size,
+#                               dropout = self.drop_out_rate,
+#                               RNN_cell = RNN_cell)
+#
+#         self.word_attent = Attention(self.hid_size * 2 , self.hid_size * 2)
+#         self.sent_attent = Attention(self.hid_size * 2 , self.hid_size * 2)
+#
+#         self.lin_out1 = nn.Linear(self.hid_size * 2, num_class).cuda()
+#         self.lin_out2 = nn.Linear(self.hid_size * 2, num_class).cuda()
+#         self.lin_out3 = nn.Linear(self.hid_size * 2, num_class).cuda()
+#         self.lin_out4 = nn.Linear(self.hid_size * 2, num_class).cuda()
+#         self.lin_out5 = nn.Linear(self.hid_size * 2, num_class).cuda()
+#         self.lin_out6 = nn.Linear(self.hid_size * 2, num_class).cuda()
+#         self.lin_out7 = nn.Linear(self.hid_size * 2, num_class).cuda()
+#
+#         self._init_para()
+#
+#
+#     def _init_para(self):
+#         if self.model_init_needed:
+#             for m in self.modules():
+#                 if isinstance(m, nn.Linear):
+#                     nn.init.xavier_normal(m.weight.data)
+#                     if m.bias is not None:
+#                         m.bias.data.normal_(0, 0.01)
+#
+#     def set_emb_tensor(self, emb_tensor):
+#         self.emb_size = emb_tensor.size(-1)
+#         self.embed.weight.data = emb_tensor
+#
+#     def _reorder_sent(self, sents, sent_order):
+#         sents = F.pad(sents, (0, 0, 1, 0))  # adds a 0 to the top
+#         revs = sents[sent_order.view(-1)]
+#         revs = revs.view(sent_order.size(0), sent_order.size(1), sents.size(1))
+#         return revs
+#
+#     def forward(self, batch_reviews, sent_order, ls, lr, batch_overRating,batch_doc_usrs,batch_sen_usrs):
+#
+#         if self.drop_out_rate > 0.0:
+#             emb_w = F.dropout(self.embed(batch_reviews), training=self.training, p=self.drop_out_rate)
+#         else:
+#             emb_w = self.embed(batch_reviews)
+#
+#         packed_sents = torch.nn.utils.rnn.pack_padded_sequence(emb_w, ls, batch_first=True)
+#         wrd_rnn_res, len_s = self.word_rnn(packed_sents)
+#
+#         wrd_rnn_fill_1_tensor = torch.ones_like(wrd_rnn_res).float().cuda()
+#         sent_emb, wrd_att_res = self.word_attent(wrd_rnn_res, wrd_rnn_fill_1_tensor, len_s)
+#         rev_emb = self._reorder_sent(sent_emb, sent_order)
+#         packed_rev = torch.nn.utils.rnn.pack_padded_sequence(rev_emb, lr, batch_first=True)
+#         sen_rnn_res, len_r = self.sent_rnn(packed_rev)
+#         sen_rnn_fill_1_tensor = torch.ones_like(sen_rnn_res).float().cuda()
+#         doc_embs, sent_att_res = self.sent_attent(sen_rnn_res, sen_rnn_fill_1_tensor, len_r)
+#         doc_embs_new = doc_embs
+#
+#         out = []
+#         if self.aspect_label_num == 7:
+#             out.append(self.lin_out1(doc_embs_new))
+#             out.append(self.lin_out2(doc_embs_new))
+#             out.append(self.lin_out3(doc_embs_new))
+#             out.append(self.lin_out4(doc_embs_new))
+#             out.append(self.lin_out5(doc_embs_new))
+#             out.append(self.lin_out6(doc_embs_new))
+#             out.append(self.lin_out7(doc_embs_new))
+#         if self.aspect_label_num == 4:
+#             out.append(self.lin_out1(doc_embs_new))
+#             out.append(self.lin_out2(doc_embs_new))
+#             out.append(self.lin_out3(doc_embs_new))
+#             out.append(self.lin_out4(doc_embs_new))
+#         return out, [wrd_att_res], [sen_rnn_res]
+
+class MBGRU(nn.Module):
+    def __init__(self,
+                 ntoken,
+                 n_users,
+                 n_rating,
+                 num_class,
+                 aspect_label_num,
+                 emb_size=200,
+                 hid_size=100,
+                 mode = '',
+                 rnn_type = 'GRU',
+                 drop_out_rate=0.0,
+                 model_init_needed=False
+                 ):
+        super(MBGRU, self).__init__()
+
+        self.mode = mode
+        self.emb_size = emb_size
+        self.aspect_label_num = aspect_label_num
+        self.hid_size = hid_size
+        self.rnn_type = rnn_type
+        self.drop_out_rate = drop_out_rate
+        self.model_init_needed = model_init_needed
+
+
+        self.embed = nn.Embedding(ntoken, emb_size, padding_idx=0)
+        if self.mode.find('U') != -1 or self.mode.find('R') != -1:
+            self.users = nn.Embedding(n_users, emb_size)
+            I.normal(self.users.weight.data, 0.01, 0.01)
+            self.rating_embed = nn.Embedding(n_rating, emb_size)
+            I.normal(self.rating_embed.weight.data, 0.01, 0.01)
 
         if self.rnn_type == 'LSTM':
             RNN_cell = nn.LSTM
@@ -193,19 +423,21 @@ class MODELA(nn.Module):
 
         if self.drop_out_rate > 0.0:
             emb_w = F.dropout(self.embed(batch_reviews), training=self.training, p=self.drop_out_rate)
-            emb_u_doc_level = F.dropout(self.users(batch_doc_usrs), training=self.training, p=self.drop_out_rate)
-            emb_u_sen_level = F.dropout(self.users(batch_sen_usrs), training=self.training, p=self.drop_out_rate)
-            emb_overRating = F.dropout(self.rating_embed(batch_overRating), training=self.training, p=self.drop_out_rate)
+            if self.mode.find('U') != -1 or self.mode.find('R') != -1:
+                emb_u_doc_level = F.dropout(self.users(batch_doc_usrs), training=self.training, p=self.drop_out_rate)
+                emb_u_sen_level = F.dropout(self.users(batch_sen_usrs), training=self.training, p=self.drop_out_rate)
+                emb_overRating = F.dropout(self.rating_embed(batch_overRating), training=self.training, p=self.drop_out_rate)
         else:
             emb_w = self.embed(batch_reviews)
-            emb_u_doc_level = self.users(batch_doc_usrs)
-            emb_u_sen_level = self.users(batch_sen_usrs)
-            emb_overRating = self.rating_embed(batch_overRating)
+            if self.mode.find('U') != -1 or self.mode.find('R') != -1:
+                emb_u_doc_level = self.users(batch_doc_usrs)
+                emb_u_sen_level = self.users(batch_sen_usrs)
+                emb_overRating = self.rating_embed(batch_overRating)
 
         packed_sents = torch.nn.utils.rnn.pack_padded_sequence(emb_w, ls, batch_first=True)
         wrd_rnn_res, len_s = self.word_rnn(packed_sents)
         if self.mode.find('U') == -1:
-            wrd_rnn_asp_join_tmp_tensor = wrd_rnn_res
+            wrd_rnn_asp_join_tmp_tensor = torch.ones_like(wrd_rnn_res).float().cuda()
         else:
             wrd_rnn_asp_join_tmp_tensor = torch.cat([emb_u_sen_level.expand(wrd_rnn_res.size()[0],emb_u_sen_level.size()[0],emb_u_sen_level.size()[1]),
                                                      wrd_rnn_res], dim=-1)
@@ -215,7 +447,7 @@ class MODELA(nn.Module):
         packed_rev = torch.nn.utils.rnn.pack_padded_sequence(rev_emb, lr, batch_first=True)
         sen_rnn_res, len_r = self.sent_rnn(packed_rev)
         if self.mode.find('U') == -1:
-            sent_rnn_asp_join_tmp_tensor = sen_rnn_res
+            sent_rnn_asp_join_tmp_tensor = torch.ones_like(sen_rnn_res).float().cuda()
         else:
             sent_rnn_asp_join_tmp_tensor = torch.cat([emb_u_doc_level.expand(sen_rnn_res.size()[0],
                                                                              emb_u_doc_level.size()[0],
@@ -247,117 +479,7 @@ class MODELA(nn.Module):
             out.append(self.lin_out4(doc_embs_new))
         return out, [wrd_att_res], [sent_att_res]
 
-class MBGRU(nn.Module):
-    def __init__(self,
-                 ntoken,
-                 num_class,
-                 aspect_label_num,
-                 emb_size=200,
-                 hid_size=100,
-                 mode = '',
-                 rnn_type = 'GRU',
-                 drop_out_rate=0.0,
-                 model_init_needed=False
-                 ):
-        super(MBGRU, self).__init__()
-
-        self.mode = mode
-        self.emb_size = emb_size
-        self.hid_size = hid_size
-        self.rnn_type = rnn_type
-        self.drop_out_rate = drop_out_rate
-        self.model_init_needed = model_init_needed
-        self.aspect_label_num = aspect_label_num
-
-        self.embed = nn.Embedding(ntoken, emb_size, padding_idx=0)
-
-
-        if self.rnn_type == 'LSTM':
-            RNN_cell = nn.LSTM
-        elif self.rnn_type == 'GRU':
-            RNN_cell = nn.GRU
-        else:
-            RNN_cell = nn.GRU
-
-
-        self.word_rnn = BiRNN(inp_size = emb_size,
-                              hid_size = self.hid_size,
-                              dropout = self.drop_out_rate,
-                              RNN_cell = RNN_cell)
-
-        self.sent_rnn = BiRNN(inp_size = self.hid_size * 2,
-                              hid_size = self.hid_size,
-                              dropout = self.drop_out_rate,
-                              RNN_cell = RNN_cell)
-
-        self.word_attent = Attention(self.hid_size * 2 , self.hid_size * 2)
-        self.sent_attent = Attention(self.hid_size * 2 , self.hid_size * 2)
-
-        self.lin_out1 = nn.Linear(self.hid_size * 2, num_class).cuda()
-        self.lin_out2 = nn.Linear(self.hid_size * 2, num_class).cuda()
-        self.lin_out3 = nn.Linear(self.hid_size * 2, num_class).cuda()
-        self.lin_out4 = nn.Linear(self.hid_size * 2, num_class).cuda()
-        self.lin_out5 = nn.Linear(self.hid_size * 2, num_class).cuda()
-        self.lin_out6 = nn.Linear(self.hid_size * 2, num_class).cuda()
-        self.lin_out7 = nn.Linear(self.hid_size * 2, num_class).cuda()
-
-        self._init_para()
-
-
-    def _init_para(self):
-        if self.model_init_needed:
-            for m in self.modules():
-                if isinstance(m, nn.Linear):
-                    nn.init.xavier_normal(m.weight.data)
-                    if m.bias is not None:
-                        m.bias.data.normal_(0, 0.01)
-
-    def set_emb_tensor(self, emb_tensor):
-        self.emb_size = emb_tensor.size(-1)
-        self.embed.weight.data = emb_tensor
-
-    def _reorder_sent(self, sents, sent_order):
-        sents = F.pad(sents, (0, 0, 1, 0))  # adds a 0 to the top
-        revs = sents[sent_order.view(-1)]
-        revs = revs.view(sent_order.size(0), sent_order.size(1), sents.size(1))
-        return revs
-
-    def forward(self, batch_reviews, sent_order, ls, lr, batch_overRating,batch_doc_usrs,batch_sen_usrs):
-
-        if self.drop_out_rate > 0.0:
-            emb_w = F.dropout(self.embed(batch_reviews), training=self.training, p=self.drop_out_rate)
-        else:
-            emb_w = self.embed(batch_reviews)
-
-        packed_sents = torch.nn.utils.rnn.pack_padded_sequence(emb_w, ls, batch_first=True)
-        wrd_rnn_res, len_s = self.word_rnn(packed_sents)
-
-        wrd_rnn_fill_1_tensor = torch.ones_like(wrd_rnn_res).float().cuda()
-        sent_emb, wrd_att_res = self.word_attent(wrd_rnn_res, wrd_rnn_fill_1_tensor, len_s)
-        rev_emb = self._reorder_sent(sent_emb, sent_order)
-        packed_rev = torch.nn.utils.rnn.pack_padded_sequence(rev_emb, lr, batch_first=True)
-        sen_rnn_res, len_r = self.sent_rnn(packed_rev)
-        sen_rnn_fill_1_tensor = torch.ones_like(sen_rnn_res).float().cuda()
-        doc_embs, sent_att_res = self.sent_attent(sen_rnn_res, sen_rnn_fill_1_tensor, len_r)
-        doc_embs_new = doc_embs
-
-        out = []
-        if self.aspect_label_num == 7:
-            out.append(self.lin_out1(doc_embs_new))
-            out.append(self.lin_out2(doc_embs_new))
-            out.append(self.lin_out3(doc_embs_new))
-            out.append(self.lin_out4(doc_embs_new))
-            out.append(self.lin_out5(doc_embs_new))
-            out.append(self.lin_out6(doc_embs_new))
-            out.append(self.lin_out7(doc_embs_new))
-        if self.aspect_label_num == 4:
-            out.append(self.lin_out1(doc_embs_new))
-            out.append(self.lin_out2(doc_embs_new))
-            out.append(self.lin_out3(doc_embs_new))
-            out.append(self.lin_out4(doc_embs_new))
-        return out, [wrd_att_res], [sen_rnn_res]
-
-class MODELB(MODELA):
+class MBGRUAsp(nn.Module):
     # 以 Attention 的方式 添加 Aspect
     def __init__(self,
                  ntoken,
@@ -372,8 +494,38 @@ class MODELB(MODELA):
                  drop_out_rate=0.0,
                  model_init_needed=False
                  ):
-        super(MODELB, self).__init__(ntoken, n_users, n_rating, num_class, aspect_label_num,
-                                     emb_size, hid_size, mode, rnn_type, drop_out_rate, model_init_needed)
+        super(MBGRUAsp, self).__init__()
+
+        self.mode = mode
+        self.emb_size = emb_size
+        self.aspect_label_num = aspect_label_num
+        self.hid_size = hid_size
+        self.rnn_type = rnn_type
+        self.drop_out_rate = drop_out_rate
+        self.model_init_needed = model_init_needed
+
+        self.embed = nn.Embedding(ntoken, emb_size, padding_idx=0)
+        self.users = nn.Embedding(n_users, emb_size)
+        I.normal(self.users.weight.data, 0.01, 0.01)
+        self.rating_embed = nn.Embedding(n_rating, emb_size)
+        I.normal(self.rating_embed.weight.data, 0.01, 0.01)
+
+        if self.rnn_type == 'LSTM':
+            RNN_cell = nn.LSTM
+        elif self.rnn_type == 'GRU':
+            RNN_cell = nn.GRU
+        else:
+            RNN_cell = nn.GRU
+
+        self.word_rnn = BiRNN(inp_size=emb_size,
+                              hid_size=self.hid_size,
+                              dropout=self.drop_out_rate,
+                              RNN_cell=RNN_cell)
+
+        self.sent_rnn = BiRNN(inp_size=self.hid_size * 2,
+                              hid_size=self.hid_size,
+                              dropout=self.drop_out_rate,
+                              RNN_cell=RNN_cell)
 
         self.asp_embed = nn.Embedding(aspect_label_num, emb_size)
 
@@ -383,6 +535,54 @@ class MODELB(MODELA):
         else:
             self.word_attent = Attention(hid_size * 2 + emb_size, hid_size * 2)
             self.sent_attent = Attention(hid_size * 2 + emb_size, hid_size * 2)
+
+        if self.mode.find('U') != -1 and self.mode.find('R') != -1:
+            self.lin_out1 = nn.Linear(hid_size * 2 + emb_size * 2, num_class).cuda()
+            self.lin_out2 = nn.Linear(hid_size * 2 + emb_size * 2, num_class).cuda()
+            self.lin_out3 = nn.Linear(hid_size * 2 + emb_size * 2, num_class).cuda()
+            self.lin_out4 = nn.Linear(hid_size * 2 + emb_size * 2, num_class).cuda()
+            self.lin_out5 = nn.Linear(hid_size * 2 + emb_size * 2, num_class).cuda()
+            self.lin_out6 = nn.Linear(hid_size * 2 + emb_size * 2, num_class).cuda()
+            self.lin_out7 = nn.Linear(hid_size * 2 + emb_size * 2, num_class).cuda()
+        elif self.mode.find('U') != -1 or self.mode.find('R') != -1:
+            self.lin_out1 = nn.Linear(self.hid_size * 2 + emb_size, num_class).cuda()
+            self.lin_out2 = nn.Linear(self.hid_size * 2 + emb_size, num_class).cuda()
+            self.lin_out3 = nn.Linear(self.hid_size * 2 + emb_size, num_class).cuda()
+            self.lin_out4 = nn.Linear(self.hid_size * 2 + emb_size, num_class).cuda()
+            self.lin_out5 = nn.Linear(self.hid_size * 2 + emb_size, num_class).cuda()
+            self.lin_out6 = nn.Linear(self.hid_size * 2 + emb_size, num_class).cuda()
+            self.lin_out7 = nn.Linear(self.hid_size * 2 + emb_size, num_class).cuda()
+        else:
+            self.lin_out1 = nn.Linear(self.hid_size * 2, num_class).cuda()
+            self.lin_out2 = nn.Linear(self.hid_size * 2, num_class).cuda()
+            self.lin_out3 = nn.Linear(self.hid_size * 2, num_class).cuda()
+            self.lin_out4 = nn.Linear(self.hid_size * 2, num_class).cuda()
+            self.lin_out5 = nn.Linear(self.hid_size * 2, num_class).cuda()
+            self.lin_out6 = nn.Linear(self.hid_size * 2, num_class).cuda()
+            self.lin_out7 = nn.Linear(self.hid_size * 2, num_class).cuda()
+
+        self._init_para()
+
+
+    def _init_para(self):
+        if self.model_init_needed:
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_normal(m.weight.data)
+                    if m.bias is not None:
+                        m.bias.data.normal_(0, 0.01)
+
+
+    def set_emb_tensor(self, emb_tensor):
+        self.emb_size = emb_tensor.size(-1)
+        self.embed.weight.data = emb_tensor
+
+
+    def _reorder_sent(self, sents, sent_order):
+        sents = F.pad(sents, (0, 0, 1, 0))  # adds a 0 to the top
+        revs = sents[sent_order.view(-1)]
+        revs = revs.view(sent_order.size(0), sent_order.size(1), sents.size(1))
+        return revs
 
     def set_asp_emb_tensor(self, asp_emb_tensor):
         self.asp_emb_size = asp_emb_tensor.size(-1)

@@ -24,15 +24,17 @@ def accuracy(out,truth,ignore_index=-2):
     for i in range(0,tmp.size()[0]):
         if tmp[i].data[0] == 0:
             select_list.append(i)
-
+    # print(truth)
     select_tensor = Variable(torch.from_numpy(numpy.asarray(select_list,dtype=numpy.int32))).long().cuda()
     max_i_new = torch.index_select(max_i, 0, select_tensor)
     truth_new = torch.index_select(truth, 0, select_tensor)
-
+    # print(max_i_new)
+    # print(truth_new)
     eq = torch.eq(max_i_new,truth_new).float()
     all_eq = torch.sum(eq)
+    # print(all_eq)
 
-    return all_eq, all_eq/truth_new.size(0)*100, max_i_new.float(),truth_new
+    return all_eq, truth_new.size(0),max_i,all_eq/truth_new.size(0)*100, max_i_new.float(),truth_new
 
 def get_dir_files(dir,is_contain_dir = False):
     file_list = []
@@ -215,9 +217,9 @@ class RunBase(object):
     def _get_model_file(self,model_str):
         return self._get_model_filefold() + model_str + ''
 
-class RunMODELA(RunBase):
+class RunMBGRU(RunBase):
     def _construct_net(self,token_size,n_users):
-        self.net = MODELA(ntoken=token_size,
+        self.net = MBGRU(ntoken=token_size,
                         n_rating=self.dataset_dict['class_num'],
                         n_users = n_users,
                         emb_size = self.args['embed_size'],
@@ -253,6 +255,9 @@ class RunMODELA(RunBase):
                 iter_end = len(dataset_pre.batch_t)
             num_train_all = iter_end - iter_begin + 1
 
+        all_ok_num = 0
+        all_test_num = 0
+
         with tqdm(total=num_train_all, desc='Training') as pbar:
             for iteration in range(iter_begin, iter_end):
                 batch_t = dataset_pre.batch_t[iteration]
@@ -283,8 +288,9 @@ class RunMODELA(RunBase):
                 out_all = torch.cat(tuple(out), 0)
                 aspect_r_t_tensor_all = torch.cat(tuple(aspect_r_t_tensor_list), 0)
 
-                ok, per, val_i, truth_new = accuracy(out_all, aspect_r_t_tensor_all)
-
+                ok_num, all_num, _, per, val_i, truth_new = accuracy(out_all, aspect_r_t_tensor_all)
+                all_ok_num += ok_num
+                all_test_num += all_num
                 ok_all += per.data[0]
                 mseloss = F.mse_loss(val_i, truth_new.float())
                 mean_rmse += math.sqrt(mseloss.data[0])
@@ -311,7 +317,7 @@ class RunMODELA(RunBase):
         logging.info("===> Epoch {} Complete: Avg. Loss: {:.4f}, {}% accuracy".format(epoch,
                                                                                epoch_loss / num_train_all,
                                                                                ok_all / num_train_all))
-        train_acc = ok_all / num_train_all
+        train_acc = float(all_ok_num / all_test_num)
         dev_acc,_ = self._develop()
         return train_acc, dev_acc
 
@@ -326,6 +332,8 @@ class RunMODELA(RunBase):
         mean_rmse = 0
         all_mse_loss = 0.0
         all_dat_size = 0.0
+        all_ok_num = 0
+        all_test_num = 0
         with tqdm(total=len(dataset_pre.batch_t), desc=msg) as pbar:
             for iteration in range(0, len(dataset_pre.batch_t)):
                 batch_t = dataset_pre.batch_t[iteration]
@@ -350,8 +358,10 @@ class RunMODELA(RunBase):
 
                 out_all = torch.cat(tuple(out), 0)
                 aspect_r_t_tensor_all = torch.cat(tuple(aspect_r_t_tensor_list), 0)
-                ok, per, val_i, truth_new = accuracy(out_all, aspect_r_t_tensor_all)
+                ok_num, all_num, _, per, val_i, truth_new = accuracy(out_all, aspect_r_t_tensor_all)
                 ok_all += per.data[0]
+                all_ok_num += ok_num
+                all_test_num += all_num
                 mseloss = F.mse_loss(val_i, truth_new.float())
                 all_mse_loss += mseloss.data[0] * val_i.size()[0]
                 all_dat_size += val_i.size()[0]
@@ -363,11 +373,59 @@ class RunMODELA(RunBase):
                 pbar.set_postfix({"acc": ok_all / pred, "skipped": skipped, "mseloss": mean_mse / (iteration + 1),
                                   "rmseloss": mean_rmse / (iteration + 1)})
 
-
-        logging.info("===> {} Complete:  {}% accuracy".format(msg, ok_all / pred))
-        all_acc = ok_all / pred
+        #all_acc = ok_all / pred
         tst_mse_loss = all_mse_loss / all_dat_size
+        all_acc = float(all_ok_num / all_test_num)
+        #print('all_acc: {}, all_acc2:{}'.format(all_acc,all_acc2))
+        logging.info("===> {} Complete:  {}% accuracy".format(msg, all_acc))
         return all_acc, tst_mse_loss
+
+    def _get_test_res(self, msg="GetTestRes"):
+
+        self.net.eval()
+        test_id_list = []
+        model_ans_list = []
+        dataset_pre = self.dataset_test
+        all_ok_num = 0
+        all_test_num = 0
+        with tqdm(total=len(dataset_pre.batch_t), desc=msg) as pbar:
+            for iteration in range(0, len(dataset_pre.batch_t)):
+                batch_t = dataset_pre.batch_t[iteration]
+                r_t = dataset_pre.r_t[iteration]
+                doc_level_u_t = dataset_pre.doc_level_u_t[iteration]
+                sen_level_u_t = dataset_pre.sen_level_u_t[iteration]
+                sent_order = dataset_pre.sent_order[iteration]
+                ls = dataset_pre.ls[iteration]
+                lr = dataset_pre.lr[iteration]
+                aspect_r_t_list = dataset_pre.asp_r_t[iteration]
+
+                batch_t_tensor = Variable(batch_t, volatile =True).cuda()
+                r_t_tensor = Variable(r_t).cuda()
+                doc_u_t_tensor = Variable(doc_level_u_t).cuda()
+                sen_u_t_tensor = Variable(sen_level_u_t).cuda()
+                sent_order_tensor = Variable(sent_order).cuda()
+                aspect_r_t_tensor_list = []
+                for aspect_r_t in aspect_r_t_list:
+                    aspect_r_t_tensor_list.append(Variable(aspect_r_t).cuda())
+
+                out,wrd_att_res, sent_att_res = self.net(batch_t_tensor, sent_order_tensor, ls, lr, r_t_tensor, doc_u_t_tensor,sen_u_t_tensor)
+                out_all = torch.cat(tuple(out), 0)
+                aspect_r_t_tensor_all = torch.cat(tuple(aspect_r_t_tensor_list), 0)
+                ok_num, test_num, model_ans, _, _, _ = accuracy(out_all, aspect_r_t_tensor_all)
+                # print(dataset_pre.id_list[iteration])
+                # print(model_ans)
+                # print(aspect_r_t_tensor_all)
+                all_ok_num += ok_num
+                all_test_num += test_num
+                for k,tmp_id in enumerate(dataset_pre.id_list[iteration]):
+                    test_id_list.append(tmp_id)
+                    model_ans_list.append(model_ans.cpu().view(len(dataset_pre.id_list[iteration]), -1)[k])
+
+
+                pbar.update(1)
+        logging.info('corr_num: {}, all_num: {}, acc: {}'.format(all_ok_num, all_test_num, float(all_ok_num) / float(all_test_num)))
+        return test_id_list, model_ans_list
+
 
     def _get_attent(self, dataset_pre, msg="Evaluating"):
         wrd_attent_res_list = []
@@ -426,28 +484,60 @@ class RunMODELA(RunBase):
                 self._load_dataset(mode = 'test',word2index=word2index, usr2index=usr2index)
                 self._construct_net(token_size=len(word2index),n_users = len(usr2index))
                 if self.cuda: self.net.cuda()
-                # print(self.net.state_dict()['embed.weight'])
-                # print(self.net.state_dict()['users.weight'])
                 self.net.load_state_dict(state)
-                # print(state.keys())
-                # print(state['embed.weight'])
-                # print(self.net.state_dict()['embed.weight'])
-                # print(state['users.weight'])
-                # print(self.net.state_dict()['users.weight'])
-                # self.net.state_dict()['embed.weight'] = state['embed.weight']
-                # print(self.net.state_dict()['embed.weight'])
                 test_acc,test_mse = self._test()
                 logging.info('test acc: {}, test_mse: {}'.format(test_acc,test_mse))
                 return test_acc,test_mse
             else:
                 _, _, state, acc_dict = self._load_model_para(model_file)
-                # print(state.keys())
-                # print(len(state.keys()))
                 logging.info('test acc: {}, test_mse: {}'.format(acc_dict['test_acc'],acc_dict['test_mse']))
                 return acc_dict['test_acc'],acc_dict['test_mse']
         else:
             logging.info('No Best Model......')
             return -1,-1
+
+    def print_test_result(self,out_file='cc.txt'):
+        test_file = self.dataset_dict['test']
+        id_to_str_dict = {}
+        id_list = [line_con.strip().split('\t\t')[0] for line_con in open(test_file,'r').readlines()]
+        con_list = [line_con.strip() for line_con in open(test_file, 'r').readlines()]
+        for k, tmp_id in enumerate(id_list):
+            id_to_str_dict[id_list[k]] = con_list[k]
+
+        model_file = self._get_best_dev_model()
+        logging.info('Best Dev Model({})......'.format(model_file))
+        if model_file != 'NULL':
+            word2index, usr2index, state,_ = self._load_model_para(model_file)
+            self._load_dataset(mode = 'test',word2index=word2index, usr2index=usr2index)
+            self._construct_net(token_size=len(word2index),n_users = len(usr2index))
+            if self.cuda: self.net.cuda()
+            self.net.load_state_dict(state)
+            test_id_list, model_ans_list = self._get_test_res()
+            id_to_model_ans_str_dict = {}
+            for k, tmp_id in enumerate(test_id_list):
+                score_list = []
+                all_asp_num = model_ans_list[k].data.size()[0]
+                for tmp_val in range(0,all_asp_num):
+                    score_list.append(str(model_ans_list[k][tmp_val].data.numpy()+1).replace('[','').replace(']',''))
+                id_to_model_ans_str_dict[test_id_list[k]] = ' '.join(score_list)
+
+            corr_num = 0
+            all_num = 0
+            out_line_con_list = []
+            for tmp_id in id_list:
+                out_line_con_list.append(id_to_str_dict[tmp_id] + '\t\t' + id_to_model_ans_str_dict[tmp_id])
+                tmp_m_ans_list = id_to_model_ans_str_dict[tmp_id].split(' ')
+                tmp_g_ans_list = id_to_str_dict[tmp_id].split('\t\t')[3].split(' ')
+                for k in range(0,len(tmp_m_ans_list)):
+                    if tmp_g_ans_list[k] == tmp_m_ans_list[k]: corr_num += 1
+                    if tmp_g_ans_list[k] != '-1': all_num += 1
+
+            logging.info('corr_num: {}, all_num: {}, acc: {}'.format(corr_num,all_num,float(corr_num) / float(all_num)))
+
+            open(out_file,'w+').write('\n'.join(out_line_con_list))
+
+        else:
+            logging.info('No Best Model......')
 
     def get_attent_res(self):
         model_file = self._get_best_dev_model()
@@ -549,12 +639,10 @@ class RunMODELA(RunBase):
             if is_can_break:
                 break
 
-
-
-class RunMODELB(RunMODELA):
+class RunMBGRUAsp(RunMBGRU):
 
     def _construct_net(self,token_size,n_users):
-        self.net = MODELB(ntoken=token_size,
+        self.net = MBGRUAsp(ntoken=token_size,
                                 n_rating=self.dataset_dict['class_num'],
                                 n_users = n_users,
                                 emb_size = self.args['embed_size'],
@@ -645,11 +733,12 @@ class RunMODELB(RunMODELA):
             if is_can_break:
                 break
 
-
-class RunMBGRU(RunMODELA):
+class RunMHAN(RunMBGRU):
 
     def _construct_net(self,token_size,n_users):
-        self.net = MBGRU(ntoken=token_size,
+        self.net = MHAN(ntoken=token_size,
+                         n_rating=self.dataset_dict['class_num'],
+                         n_users=n_users,
                          emb_size = self.args['embed_size'],
                          hid_size = self.args['hidden_size'],
                          aspect_label_num = self.dataset_dict['aspect_num'],

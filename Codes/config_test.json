@@ -1,7 +1,7 @@
 {
   "dataset": "TripOUR",
   "code_mode": "test",
-  "model_type": "MODELB",
+  "model_type": "MBGRUAsp",
   "model_mode": "+U+R",
   "embed_size": 200,
   "rnn_type": "GRU",
